@@ -55,7 +55,7 @@ const CAT_CONFIGS = [
       top: "50%",
       left: "50%",
       transform: "translate(-50%, -50%)",
-      width: "min(150px, 30vw)",
+      width: "min(250px, 45vw)",
       aspectRatio: "1/1",
       zIndex: 10,
     },
@@ -70,7 +70,7 @@ const CAT_CONFIGS = [
       top: "30%",
       left: "20%",
       transform: "translate(-50%, -50%) rotate(-12deg)",
-      width: "min(90px, 18vw)",
+      width: "min(150px, 30vw)",
       aspectRatio: "1/1",
       zIndex: 5,
     },
@@ -85,7 +85,7 @@ const CAT_CONFIGS = [
       top: "30%",
       left: "80%",
       transform: "translate(-50%, -50%) rotate(12deg)",
-      width: "min(90px, 18vw)",
+      width: "min(150px, 30vw)",
       aspectRatio: "1/1",
       zIndex: 5,
     },
@@ -100,7 +100,7 @@ const CAT_CONFIGS = [
       top: "70%",
       left: "20%",
       transform: "translate(-50%, -50%) rotate(-8deg)",
-      width: "min(90px, 18vw)",
+      width: "min(150px, 30vw)",
       aspectRatio: "1/1",
       zIndex: 5,
     },
@@ -115,7 +115,7 @@ const CAT_CONFIGS = [
       top: "70%",
       left: "80%",
       transform: "translate(-50%, -50%) rotate(8deg)",
-      width: "min(90px, 18vw)",
+      width: "min(150px, 30vw)",
       aspectRatio: "1/1",
       zIndex: 5,
     },
@@ -139,6 +139,11 @@ export default function ScubaDetector() {
   const animFrameRef = useRef<number>(0);
   const scubaTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastVideoTimeRef = useRef(-1);
+
+  // Centralized Scuba Cat Video Refs
+  const catVideoRef = useRef<HTMLVideoElement>(null);
+  const catOffscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const catCanvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
 
   const detectFrame = useCallback(async () => {
     const video = videoRef.current;
@@ -274,12 +279,13 @@ export default function ScubaDetector() {
           await videoRef.current.play();
         }
 
-        setStatus("✅ พร้อมแล้ว! ทำท่า SCUBA 🤿");
+        // setStatus("✅ พร้อมแล้ว! ทำท่า SCUBA 🤿");
         setIsReady(true);
 
         animFrameRef.current = requestAnimationFrame(detectFrame);
       } catch (err: any) {
         setStatus(`❌ ${err.message}`);
+        setIsReady(true);
       }
     }
 
@@ -292,6 +298,80 @@ export default function ScubaDetector() {
       handLandmarkerRef.current?.close?.();
     };
   }, [detectFrame]);
+
+  useEffect(() => {
+    const video = catVideoRef.current;
+    if (!video) return;
+
+    if (scubaDetected) {
+      if (!catOffscreenCanvasRef.current) {
+        catOffscreenCanvasRef.current = document.createElement("canvas");
+      }
+      const offscreenCanvas = catOffscreenCanvasRef.current;
+      const offscreenCtx = offscreenCanvas.getContext("2d", { willReadFrequently: true });
+
+      let animId: number;
+
+      const renderLoop = () => {
+        if (video.readyState >= 2 && offscreenCtx) {
+          if (offscreenCanvas.width !== video.videoWidth || offscreenCanvas.height !== video.videoHeight) {
+            offscreenCanvas.width = video.videoWidth;
+            offscreenCanvas.height = video.videoHeight;
+          }
+
+          // 1. Draw video to offscreen canvas
+          offscreenCtx.drawImage(video, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+
+          // 2. Perform Chroma Key once for this frame
+          const imgData = offscreenCtx.getImageData(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+          const data = imgData.data;
+
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const diff = g - Math.max(r, b);
+
+            if (g > 60 && diff > 30) {
+              data[i + 3] = 0;
+            } else if (g > 45 && diff > 15) {
+              const ratio = (diff - 15) / (30 - 15);
+              data[i + 3] = Math.min(data[i + 3], Math.round((1 - ratio) * 255));
+            }
+          }
+          offscreenCtx.putImageData(imgData, 0, 0);
+
+          // 3. Draw to all active cat canvases
+          catCanvasRefs.current.forEach((canvas) => {
+            if (!canvas) return;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) return;
+
+            if (canvas.width !== offscreenCanvas.width || canvas.height !== offscreenCanvas.height) {
+              canvas.width = offscreenCanvas.width;
+              canvas.height = offscreenCanvas.height;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(offscreenCanvas, 0, 0);
+          });
+        }
+
+        animId = requestAnimationFrame(renderLoop);
+      };
+
+      video.currentTime = 0;
+      video.play().catch((err) => console.warn("Cat video play blocked:", err));
+      animId = requestAnimationFrame(renderLoop);
+
+      return () => {
+        cancelAnimationFrame(animId);
+        video.pause();
+      };
+    } else {
+      video.pause();
+    }
+  }, [scubaDetected]);
 
   return (
     <div className="min-h-screen min-h-dvh bg-gray-950 flex flex-col items-center justify-start pt-4 pb-6 relative overflow-hidden">
@@ -346,7 +426,6 @@ export default function ScubaDetector() {
         .cat-float-5 { animation: cat-float-5 3.0s ease-in-out infinite; }
 
         .scuba-video {
-          mix-blend-mode: screen;
           border-radius: 1rem;
           overflow: hidden;
           width: 100%;
@@ -372,7 +451,11 @@ export default function ScubaDetector() {
         .wave-char span:nth-child(5){animation-delay:0.32s}
         .wave-char span:nth-child(6){animation-delay:0.4s}
         .cam-glow { animation: pulse-glow 2s ease-in-out infinite; }
-        .cam-wrapper { position: relative; width: 100%; }
+        .cam-wrapper {
+          position: relative;
+          width: 100%;
+          max-height: calc(100dvh - 100px);
+        }
         .cam-wrapper video,
         .cam-wrapper canvas {
           position: absolute;
@@ -382,9 +465,9 @@ export default function ScubaDetector() {
           object-fit: cover;
         }
         .cam-wrapper canvas { transform: scaleX(1); }
-        /* 16:9 on desktop, portrait 3:4 on mobile */
+        /* 16:9 on desktop, portrait 9:16 on mobile (fills screen down to the bottom) */
         .cam-ratio { padding-top: 56.25%; }
-        @media (max-width: 600px) { .cam-ratio { padding-top: 133%; } }
+        @media (max-width: 600px) { .cam-ratio { padding-top: 177.78%; } }
       `}</style>
 
       <div className="relative z-10 flex flex-col items-center gap-2 w-full px-2 sm:px-4" style={{ maxWidth: "calc(100vw - 16px)" }}>
@@ -450,15 +533,13 @@ export default function ScubaDetector() {
 
                 {/* 5 Cats Container */}
                 <div className="absolute inset-0 pointer-events-none">
-                  {CAT_CONFIGS.map((cat) => (
+                  {CAT_CONFIGS.map((cat, index) => (
                     <div key={cat.id} style={cat.style}>
                       <div className={cat.popClass} style={{ width: "100%", height: "100%" }}>
-                        <video
-                          src="/cat_scuba.webm"
-                          autoPlay
-                          loop
-                          muted
-                          playsInline
+                        <canvas
+                          ref={(el) => {
+                            catCanvasRefs.current[index] = el;
+                          }}
                           className={`scuba-video ${cat.floatClass} ${cat.videoClass}`}
                         />
                       </div>
@@ -479,6 +560,15 @@ export default function ScubaDetector() {
           <p className="text-xs text-gray-600 text-center">{status}</p>
         )}
       </div>
+
+      <video
+        ref={catVideoRef}
+        src="/Scuba_cat_Green Screen.mp4"
+        loop
+        muted
+        playsInline
+        style={{ display: "none" }}
+      />
     </div>
   );
 }
